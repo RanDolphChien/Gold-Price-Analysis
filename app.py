@@ -6,6 +6,7 @@ from plotly.subplots import make_subplots
 from catch_engine import CatchDataEngine
 from analysis_engine import GoldAnalysisEngine
 from chart_engine import FinancialVisualizer
+from strategy_engine import StrategyEngine
 from datetime import datetime, timedelta
 
 # 配置頁面
@@ -18,16 +19,29 @@ st.set_page_config(
 
 # 使用 Streamlit 緩存機制優化性能
 @st.cache_data(ttl=3600)  # 數據緩存 1 小時
-def get_data(ticker: str, period: str, interval: str):
+def get_market_data(main_ticker: str, sec_ticker: str, period: str, interval: str):
     """
-    封裝分析邏輯，利用緩存避免重複的網路請求與計算。
+    封裝分析邏輯，並在抓取後立即進行跨標的索引對齊。
     """
-    analyzer = CatchDataEngine(ticker)
-    df = analyzer.fetch_data(period=period, interval=interval)
-    if df.empty:
-        return None, None
+    engine_main = CatchDataEngine(main_ticker)
+    engine_sec = CatchDataEngine(sec_ticker)
     
-    return df
+    df_main = engine_main.fetch_data(period=period, interval=interval)
+    df_sec = engine_sec.fetch_data(period=period, interval=interval)
+    
+    if df_main.empty or df_sec.empty:
+        return None, None
+        
+    # 解決時區衝突：強制移除時區資訊 (tz-naive)，避免 corr() 或 align 報錯
+    if df_main.index.tz is not None:
+        df_main.index = df_main.index.tz_localize(None)
+    if df_sec.index.tz is not None:
+        df_sec.index = df_sec.index.tz_localize(None)
+        
+    # 核心邏輯：移除共同未交易日，確保兩者數據集 1:1 對齊
+    aligned_main, aligned_sec = CatchDataEngine.align_datasets(df_main, df_sec)
+    
+    return aligned_main, aligned_sec
 
 
     
@@ -64,9 +78,8 @@ def main():
     corr_window = st.sidebar.slider("相關性滾動視窗 (Periods)", min_value=5, max_value=60, value=20, help="計算資產與美元指數之間相關係數的時間長度")
 
     # 1. 執行分析
-    with st.spinner("正在獲取數據並計算技術指標..."):
-        main_df = get_data(main_ticker, period, interval)
-        sec_df = get_data(sec_ticker, period, interval)
+    with st.spinner("正在獲取數據並同步市場交易日..."):
+        main_df, sec_df = get_market_data(main_ticker, sec_ticker, period, interval)
 
     if main_df is None or main_df.empty or sec_df is None or sec_df.empty:
         st.error("無法獲取數據，請檢查代號或期間設定。")
@@ -75,35 +88,60 @@ def main():
     # 2. 技術指標計算 (利用向量化運算引擎)
     analysis = GoldAnalysisEngine(main_df)
     processed_df = analysis.calculate_indicators()
+    sec_analysis = GoldAnalysisEngine(sec_df)
+    sec_processed_df = sec_analysis.calculate_indicators()
 
-    # 3. 實例化視覺化工具
+    # 3. 策略訊號與結論產生
+    signals = StrategyEngine.detect_signals(processed_df)
+    summary = StrategyEngine.get_signal_summary(processed_df, signals)
+
+    # 4. 顯示策略結論區塊 (位於頂部最顯眼處)
+    st.subheader("🎯 策略決策建議")
+    s_col1, s_col2, s_col3 = st.columns([2, 1, 1])
+    
+    with s_col1:
+        # 根據建議狀態顯示不同顏色的提醒
+        if "買入" in summary["當前建議"]:
+            st.success(f"### {summary['當前建議']}")
+        elif "賣出" in summary["當前建議"]:
+            st.warning(f"### {summary['當前建議']}")
+        else:
+            st.info(f"### {summary['當前建議']}")
+            
+    with s_col2:
+        st.metric("趨勢狀態", summary["趨勢狀態"])
+    with s_col3:
+        st.metric("分析日期", summary["日期"])
+
+    # 5. 實例化視覺化工具與主圖表
     viz = FinancialVisualizer()
-    # 4. 呼叫主技術圖表 (Price, Volume, MACD, RSI)
     st.subheader("核心技術面分析")
-    main_fig = viz.create_main_chart(processed_df)
+    main_fig = viz.create_main_chart(processed_df, sec_processed_df, sec_ticker)
     st.plotly_chart(main_fig, use_container_width=True)
         
     st.markdown("---")
 
-    # 5. 數據指標摘要 (Metrics)
-    col1, col2, col3 = st.columns(3)
+    # 6. 數據指標摘要 (Metrics)
+    col1, col2, col3, col4 = st.columns(4)
     correlation = processed_df['Close'].corr(sec_df['Close'])
     
     col1.metric("當前收盤價", f"${processed_df['Close'].iloc[-1]:,.2f}")
-    col2.metric("宏觀相關性 (vs DXY)", f"{correlation:.4f}")
+    col2.metric("宏觀相關性", f"{correlation:.4f}")
     col3.metric("RSI (14)", f"{processed_df['RSI'].iloc[-1]:.2f}")
+    # 額外顯示 MACD 柱狀體數值
+    col4.metric("MACD Hist", f"{processed_df['MACD_Hist'].iloc[-1]:.4f}")
 
-    # 6. 呼叫跨市場宏觀對比圖 (獨立視窗位於底部)
+    # 7. 跨市場宏觀對比圖
     st.subheader(f"宏觀環境深度對比：{main_ticker} vs {sec_ticker}")
     macro_fig = viz.create_macro_chart(processed_df, sec_df, window=corr_window)
     st.plotly_chart(macro_fig, use_container_width=True)
     
-    with st.expander("📝 滾動相關性分析邏輯"):
-        st.write(f"""
-        - **滾動窗口 ({corr_window})**：使用皮爾森相關係數計算過去 {corr_window} 個時段的動態關聯。
-        - **負相關 (0 到 -1)**：表示標的與美元呈現對沖關係（美元強則金價弱），這是正常宏觀邏輯。
-        - **正相關 (0 到 +1)**：當曲線進入正值區間，代表兩者同漲同跌。這通常發生在**極端避險環境**或美元失去信用錨定時，是重要的警示訊號。
-        - **零軸突破**：相關性穿越零軸往往代表市場交易邏輯的切換（從貨幣屬性切換至避險屬性）。
+    with st.expander("📝 策略邏輯說明"):
+        st.write("""
+        本系統採用**趨勢過濾 + 震盪指標**的複合邏輯：
+        1. **趨勢過濾**：當價格位於 MA50 (藍線) 之上時才考慮買入。
+        2. **買入訊號**：趨勢偏多且符合 (RSI < 30 或 MACD 金叉)。
+        3. **賣出訊號**：RSI > 70 或 MACD 死叉。
         """)
 
 if __name__ == "__main__":

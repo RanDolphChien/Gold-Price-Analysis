@@ -10,7 +10,8 @@ Bash
 python -m venv .venv
 
 # 啟用環境 (Windows)
-.venv\Scripts\activate
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+.venv\Scripts\activate.ps1
 
 # 啟用環境 (macOS/Linux)
 source .venv/bin/activate

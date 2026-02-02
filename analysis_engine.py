@@ -10,6 +10,9 @@ class GoldAnalysisEngine:
     def __init__(self, data: pd.DataFrame):
         # 深度拷貝避免原始數據汙染
         self.df = data.copy()
+        # 確保索引為 DatetimeIndex 並移除時區資訊以利對齊
+        if self.df.index.tz is not None:
+            self.df.index = self.df.index.tz_localize(None)
 
     def calculate_indicators(self):
         """
@@ -18,7 +21,7 @@ class GoldAnalysisEngine:
         self._calculate_ma()
         self._calculate_bollinger_bands()
         self._calculate_rsi()
-        self._calculate_macd() # 新增 MACD 計算
+        self._calculate_macd()
         return self.df
 
     def _calculate_ma(self, windows=[20, 50]):
@@ -32,10 +35,18 @@ class GoldAnalysisEngine:
         self.df['Lower_Band'] = ma - (std * num_std)
 
     def _calculate_rsi(self, window=14):
+        """
+        修正版 RSI：採用 Wilder's Smoothing (EMA) 以符合國際標準。
+        """
         delta = self.df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-        rs = gain / loss
+        gain = (delta.where(delta > 0, 0))
+        loss = (-delta.where(delta < 0, 0))
+        
+        # 使用 alpha = 1/window 的 EWM 計算，這才是標準的 RSI
+        avg_gain = gain.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/window, min_periods=window, adjust=False).mean()
+        
+        rs = avg_gain / avg_loss
         self.df['RSI'] = 100 - (100 / (1 + rs))
 
     def _calculate_macd(self, fast=12, slow=26, signal=9):

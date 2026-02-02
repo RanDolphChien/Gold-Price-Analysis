@@ -24,11 +24,12 @@ class FinancialVisualizer:
             'dxy_line': '#F48FB1',    # 粉紅 (DXY 指數)
             'corr_line': '#64B5F6',   # 天藍色 (相關性)
             'volume_bars': 'rgba(128, 128, 128, 0.5)', # 預設色，後續會動態變色
+            'sec_line': '#F48FB1',   # 對比標的色 (粉色)
             'bb_fill': 'rgba(128, 128, 128, 0.1)',
             'bb_line': 'rgba(255, 255, 255, 0.2)'
         }
 
-    def create_main_chart(self, df: pd.DataFrame):
+    def create_main_chart(self, df: pd.DataFrame, sec_df: pd.DataFrame = None, sec_name: str = ""):
         """
         主進入點：建立四層結構金融圖表（Price, Volume, MACD, RSI）。
         """
@@ -37,20 +38,21 @@ class FinancialVisualizer:
             shared_xaxes=True, 
             vertical_spacing=0.03, # 縮小間距使圖表更緊湊
             subplot_titles=('Price Action & Volatility', 'Volume', 'Momentum (MACD)', 'Strength (RSI)'),
-            row_width=[0.15, 0.15, 0.25, 0.45] # 調整比例，給予主圖最大空間
+            row_width=[0.15, 0.15, 0.25, 0.45], # 調整比例，給予主圖最大空間
+            specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}], [{"secondary_y": False}]]
         )
 
         # 1. 計算全局動態範圍
         ranges = self._calculate_dynamic_ranges(df)
 
         # 2. 繪製各層視窗
-        self._plot_main_chart(fig, df, row=1)
+        self._plot_main_chart(fig, df, row=1, sec_df=sec_df, sec_name=sec_name)
         self._plot_volume(fig, df, row=2)
         self._plot_macd(fig, df, row=3)
         self._plot_rsi(fig, df, row=4)
 
         # 3. 更新軸屬性與佈局
-        self._apply_layout(fig, ranges)
+        self._apply_layout(fig, ranges, sec_name)
 
         return fig
 
@@ -140,7 +142,7 @@ class FinancialVisualizer:
             'rsi': [min(df['RSI'].min(), 25) - 5, max(df['RSI'].max(), 75) + 5]
         }
 
-    def _plot_main_chart(self, fig, df, row):
+    def _plot_main_chart(self, fig, df, row, sec_df=None, sec_name=""):
         # Candlestick (紅漲綠跌)
         fig.add_trace(go.Candlestick(
             x=df.index, open=df['Open'], high=df['High'],
@@ -151,6 +153,14 @@ class FinancialVisualizer:
             decreasing_fillcolor=self.colors['main_down']
         ), row=row, col=1)
         
+        # 疊加對比標的價格 (使用副座標軸)
+        if sec_df is not None:
+            fig.add_trace(go.Scatter(
+                x=sec_df.index, y=sec_df['Close'], 
+                name=f"Overlay: {sec_name}",
+                line=dict(color=self.colors['sec_line'], width=1.5, dash='dashdot')
+            ), row=row, col=1, secondary_y=True)
+
         # Bollinger Bands
         fig.add_trace(go.Scatter(
             x=df.index, y=df['Upper_Band'], 
@@ -201,11 +211,10 @@ class FinancialVisualizer:
         fig.add_hline(y=70, line_dash="dash", row=row, col=1, line_color=self.colors['main_up'])
         fig.add_hline(y=30, line_dash="dash", row=row, col=1, line_color=self.colors['main_down'])
 
-    def _apply_layout(self, fig, ranges):
-        fig.update_yaxes(range=ranges['main'], row=1, col=1, title="Price")
-        fig.update_yaxes(range=ranges['volume'], row=2, col=1, title="Volume")
-        fig.update_yaxes(range=ranges['macd'], row=3, col=1, title="MACD")
-        fig.update_yaxes(range=ranges['rsi'], row=4, col=1, title="RSI")
+    def _apply_layout(self, fig, ranges, sec_name=""):
+        fig.update_yaxes(range=ranges['main'], row=1, col=1, title="Main Price", secondary_y=False)
+        if sec_name:
+            fig.update_yaxes(title=f"Secondary: {sec_name}", row=1, col=1, secondary_y=True, showgrid=False)
         
         fig.update_layout(
             height=1100, # 增加總高度以容納四層
@@ -213,7 +222,7 @@ class FinancialVisualizer:
             template=self.theme,
             hovermode='x unified',
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(l=60, r=40, t=80, b=50),
+            # margin=dict(l=60, r=40, t=80, b=50),
             plot_bgcolor='black',
             paper_bgcolor='black'
         )

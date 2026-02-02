@@ -1,5 +1,6 @@
 import pandas as pd
 import yfinance as yf
+from typing import Optional, Tuple
 
 class CatchDataEngine:
     
@@ -27,3 +28,21 @@ class CatchDataEngine:
         except Exception as e:
             print(f"數據獲取異常: {e}")
             return pd.DataFrame()
+
+    @staticmethod
+    def align_datasets(df1: pd.DataFrame, df2: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        對齊兩個 DataFrame 的時間索引。
+        透過 Inner Join 移除任一標的未交易日的數據，確保向量化運算時長度一致。
+        """
+        if df1.empty or df2.empty:
+            return df1, df2
+            
+        # 取得交集的索引
+        common_index = df1.index.intersection(df2.index)
+        
+        # 重新取樣並排序索引，確保時間序列連續性
+        aligned_df1 = df1.loc[common_index].sort_index()
+        aligned_df2 = df2.loc[common_index].sort_index()
+        
+        return aligned_df1, aligned_df2
